@@ -1,10 +1,12 @@
 package io.github.deval123.nightshelf;
 
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 
@@ -31,20 +33,34 @@ public record Catalog(List<Entry> clips) {
     }
 
     @JsonIgnoreProperties(ignoreUnknown = true)
-    private record Raw(Integer version, List<Entry> clips) {
+    private record Raw(Integer version, JsonNode clips) {
     }
 
     public static Catalog empty() {
         return new Catalog(List.of());
     }
 
+    /**
+     * Expects {@code {"version": 1, "clips": {"<source>:<id>": {...}, ...}}}.
+     * The keys are ignored; only the values are used.
+     */
     public static Catalog read(Path file) throws IOException {
-        Raw raw = new ObjectMapper().readValue(Files.readAllBytes(file), Raw.class);
+        ObjectMapper mapper = new ObjectMapper();
+        Raw raw = mapper.readValue(Files.readAllBytes(file), Raw.class);
         if (raw.version() == null || raw.version() != SUPPORTED_VERSION) {
             throw new IOException("Unsupported catalog version " + raw.version()
                     + " in " + file + " (expected " + SUPPORTED_VERSION + ")");
         }
-        return new Catalog(raw.clips() == null ? List.of() : List.copyOf(raw.clips()));
+        if (raw.clips() == null || !raw.clips().isObject()) {
+            throw new IOException("Unexpected catalog format in " + file
+                    + ": \"clips\" must be an object keyed by \"<source>:<id>\","
+                    + " e.g. {\"version\": 1, \"clips\": {\"pixabay:111\": {...}}}");
+        }
+        List<Entry> entries = new ArrayList<>();
+        for (JsonNode node : raw.clips()) {
+            entries.add(mapper.treeToValue(node, Entry.class));
+        }
+        return new Catalog(List.copyOf(entries));
     }
 
     /** Finds the entry for a file name within a source, or null. */

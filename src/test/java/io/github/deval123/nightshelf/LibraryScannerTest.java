@@ -47,10 +47,10 @@ class LibraryScannerTest {
         fake("clips/a/one.mp4", "x");
         fake("clips/a/two.mp4", "x");
         catalog("""
-                {"version": 1, "clips": [
-                  {"source": "a", "id": "c1", "file": "clips/a/one.mp4", "width": 1,
+                {"version": 1, "clips": {
+                  "a:c1": {"source": "a", "id": "c1", "file": "clips/a/one.mp4", "width": 1,
                    "status": {"ch": "approved"}, "uses": [{"channel": "ch", "video": "v", "scene": 1}, {"channel": "ch", "video": "w", "scene": 2}, {"channel": "ch", "video": "x"}], "tags": ["t"]}
-                ]}""");
+                }}""");
 
         List<Clip> clips = LibraryScanner.scan(root);
 
@@ -66,7 +66,7 @@ class LibraryScannerTest {
     @Test
     void doesNotModifyCatalog() throws IOException {
         fake("clips/a/one.mp4", "x");
-        catalog("{\"version\": 1, \"clips\": []}");
+        catalog("{\"version\": 1, \"clips\": {}}");
         Path file = root.resolve("catalog.json");
         var before = Files.getLastModifiedTime(file);
         String content = Files.readString(file);
@@ -84,36 +84,59 @@ class LibraryScannerTest {
 
     @Test
     void rejectsUnknownCatalogVersion() throws IOException {
-        catalog("{\"version\": 2, \"clips\": []}");
+        catalog("{\"version\": 2, \"clips\": {}}");
 
         assertThrows(IOException.class, () -> LibraryScanner.scan(root));
     }
 
+    /** Invented data in the shape of the real catalog.json. */
+    private static final String REAL_SHAPE_CATALOG = """
+            {"version": 1, "clips": {
+              "pixabay:111": {"source": "pixabay", "id": "111", "file": "clips/pixabay/111.mp4",
+                "width": 1080, "height": 1920, "tags": ["night", "city"],
+                "addedAt": "2025-01-01T00:00:00Z",
+                "status": {"chan1": "approved", "chan2": "rejected"},
+                "uses": [], "size": 1, "duration": 4.5, "orientation": "portrait"},
+              "pixabay:222": {"source": "pixabay", "id": "222", "file": "clips/pixabay/222.mp4",
+                "width": 1920, "height": 1080, "tags": [],
+                "addedAt": "2025-01-02T00:00:00Z",
+                "status": {"chan1": "approved"},
+                "uses": [{"channel": "chan1", "video": "v1", "scene": 1},
+                         {"channel": "chan2", "video": "v2", "scene": 3}],
+                "size": 1, "duration": 8.0, "orientation": "landscape"},
+              "pexels:333": {"source": "pexels", "id": "333", "file": "clips/pexels/333.mp4",
+                "width": 1080, "height": 1920, "tags": ["sea"],
+                "addedAt": "2025-01-03T00:00:00Z",
+                "status": {},
+                "uses": [{"channel": "chan2", "video": "v3", "scene": 2}],
+                "size": 1, "duration": 6.0, "orientation": "portrait"}
+            }}""";
+
     @Test
-    void readsCatalogShapeWithUsesAsListOfObjects() throws IOException {
-        fake("clips/a/c1.mp4", "x");
-        fake("clips/a/c2.mp4", "x");
-        fake("clips/a/c3.mp4", "x");
-        catalog("""
-                {"version": 1, "clips": [
-                  {"source": "a", "id": "c1", "file": "clips/a/c1.mp4", "width": 1080, "height": 1920,
-                   "tags": ["night", "city"], "addedAt": "2025-01-01T00:00:00Z",
-                   "status": {"chan1": "approved", "chan2": "rejected"},
-                   "uses": [], "size": 1, "duration": 4.5, "orientation": "portrait"},
-                  {"source": "a", "id": "c2", "file": "clips/a/c2.mp4", "width": 1920, "height": 1080,
-                   "tags": [], "addedAt": "2025-01-02T00:00:00Z",
-                   "status": {"chan1": "approved"},
-                   "uses": [{"channel": "chan1", "video": "v1", "scene": 1},
-                            {"channel": "chan2", "video": "v2", "scene": 3}],
-                   "size": 1, "duration": 8.0, "orientation": "landscape"}
-                ]}""");
+    void readsRealShapeCatalogEndToEnd() throws IOException {
+        fake("clips/pixabay/111.mp4", "x");
+        fake("clips/pixabay/._111.mp4", "meta");
+        fake("clips/pixabay/222.mp4", "x");
+        fake("clips/pixabay/444.mp4", "x");
+        fake("clips/pexels/333.mp4", "x");
+        catalog(REAL_SHAPE_CATALOG);
 
         List<Clip> clips = LibraryScanner.scan(root);
 
-        assertEquals(0, clips.get(0).uses());
-        assertEquals(Map.of("chan1", "approved", "chan2", "rejected"), clips.get(0).status());
-        assertEquals(2, clips.get(1).uses());
-        assertFalse(clips.get(2).catalogued());
+        assertEquals(List.of("pexels/333", "pixabay/111", "pixabay/222", "pixabay/444"),
+                clips.stream().map(Clip::key).toList());
+        assertEquals(List.of(1, 0, 2, 0), clips.stream().map(Clip::uses).toList());
+        assertEquals(Map.of("chan1", "approved", "chan2", "rejected"), clips.get(1).status());
+        assertEquals(List.of(true, true, true, false), clips.stream().map(Clip::catalogued).toList());
+    }
+
+    @Test
+    void rejectsClipsThatIsNotAnObjectWithClearMessage() throws IOException {
+        catalog("{\"version\": 1, \"clips\": []}");
+
+        IOException e = assertThrows(IOException.class, () -> LibraryScanner.scan(root));
+
+        assertTrue(e.getMessage().contains("\"clips\" must be an object keyed by"), e.getMessage());
     }
 
     @Test
