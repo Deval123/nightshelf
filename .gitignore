@@ -1,0 +1,21 @@
+# local planning notes
+PLAN.md
+
+# build output
+target/
+
+# IDE
+.idea/
+*.iml
+.vscode/
+
+# data that must never be committed
+*.db
+*.db-wal
+*.db-shm
+*.sqlite
+*.mp4
+*.jpg
+catalog.json
+.env
+.env.*
