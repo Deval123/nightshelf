@@ -26,13 +26,20 @@ All settings come from environment variables.
 |---------------|--------------------------|----------------------------------------------|
 | `CLIPBANK_DIR`| none                     | Clip library directory (read-only)           |
 | `DB_PATH`     | `~/.nightshelf/index.db` | SQLite index; must be on a local disk        |
-| `OLLAMA_URL`  | none                     | Base URL of the Ollama API                   |
+| `OLLAMA_URL`  | none                     | Base URL of the Ollama API (http or https)   |
 | `VISION_MODEL`| `gemma3:4b`              | Vision model used to describe frames         |
 | `EMBED_MODEL` | `nomic-embed-text`       | Embedding model used for vector search       |
-| `FRAME_COUNT` | `3`                      | Frames extracted per clip                    |
+| `FRAME_COUNT` | `3`                      | Frames extracted per clip (1 to 12)          |
 
 Print the effective configuration:
 
 ```
 java -jar target/nightshelf-0.1.0-SNAPSHOT.jar
+```
+
+Describe one clip with the vision model (needs `CLIPBANK_DIR`, `OLLAMA_URL`,
+ffmpeg and a running Ollama):
+
+```
+java -jar target/nightshelf-0.1.0-SNAPSHOT.jar describe /path/to/clip.mp4
 ```

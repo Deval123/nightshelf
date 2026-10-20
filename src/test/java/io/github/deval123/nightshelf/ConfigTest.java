@@ -60,4 +60,27 @@ class ConfigTest {
         assertThrows(IllegalArgumentException.class, () -> Config.from(Map.of("FRAME_COUNT", "0"), HOME));
         assertThrows(IllegalArgumentException.class, () -> Config.from(Map.of("FRAME_COUNT", "x"), HOME));
     }
+
+    @Test
+    void capsFrameCountAtTwelve() {
+        assertEquals(12, Config.from(Map.of("FRAME_COUNT", "12"), HOME).frameCount());
+        assertThrows(IllegalArgumentException.class, () -> Config.from(Map.of("FRAME_COUNT", "13"), HOME));
+    }
+
+    @Test
+    void ollamaUrlMustBeHttpOrHttps() {
+        assertEquals("https://h:1", Config.from(Map.of("OLLAMA_URL", "https://h:1"), HOME).ollamaUrl());
+        for (String bad : new String[] {"file:///etc/passwd", "ftp://h", "localhost:11434", "http://", "not a url"}) {
+            assertThrows(IllegalArgumentException.class, () -> Config.from(Map.of("OLLAMA_URL", bad), HOME), bad);
+        }
+    }
+
+    @Test
+    void requireOllamaUrlExplainsWhenUnset() {
+        var e = assertThrows(IllegalArgumentException.class, () -> Config.from(Map.of(), HOME).requireOllamaUrl());
+
+        assertTrue(e.getMessage().contains("OLLAMA_URL is not set"), e.getMessage());
+        assertEquals("http://h:11434",
+                Config.from(Map.of("OLLAMA_URL", "http://h:11434"), HOME).requireOllamaUrl().toString());
+    }
 }
