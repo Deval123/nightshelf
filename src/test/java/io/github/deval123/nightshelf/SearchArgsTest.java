@@ -48,6 +48,12 @@ class SearchArgsTest {
                 List.of("q", "--min-duration", "abc"),
                 List.of("q", "--channel"),
                 List.of("q", "--channel", "--status"),
+                List.of("q", "--min-similarity", "-0.1"),
+                List.of("q", "--min-similarity", "1.5"),
+                List.of("q", "--min-similarity", "NaN"),
+                List.of("q", "--min-similarity", "Infinity"),
+                List.of("q", "--min-similarity", "abc"),
+                List.of("q", "--min-similarity"),
                 List.of("q", "--nope", "x"))) {
             IllegalArgumentException e = assertThrows(IllegalArgumentException.class, () -> SearchArgs.parse(bad),
                     bad.toString());
@@ -61,5 +67,13 @@ class SearchArgsTest {
                 () -> SearchArgs.parse(List.of("q", "--\u001b[31mred")));
 
         assertTrue(!e.getMessage().contains("\u001b"));
+    }
+
+    @Test
+    void minSimilarityIsOffByDefaultAndAcceptsTheWholeRange() {
+        assertNull(SearchArgs.parse(List.of("q")).minSimilarity());
+        assertEquals(0.0, SearchArgs.parse(List.of("q", "--min-similarity", "0")).minSimilarity());
+        assertEquals(0.62, SearchArgs.parse(List.of("q", "--min-similarity", "0.62")).minSimilarity());
+        assertEquals(1.0, SearchArgs.parse(List.of("q", "--min-similarity", "1")).minSimilarity());
     }
 }

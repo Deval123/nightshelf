@@ -150,7 +150,7 @@ java -jar target/nightshelf-0.1.0-SNAPSHOT.jar search "rainy city at night" \
 Results combine SQLite full-text search (FTS5) and vector similarity with
 reciprocal rank fusion. If Ollama is not configured or not reachable, the
 search falls back to full-text only and prints one `note:` line. Each result
-shows the key, score, duration, a one-line description, the status per channel
+shows the key, score, the cosine similarity of the query to the clip (`sim 0.62`, or `sim -` when the clip was found by full-text search only), duration, a one-line description, the status per channel
 and the channels it was used on (from `catalog.json`, which is only read), and
 the file path.
 
@@ -160,6 +160,7 @@ the file path.
 | `--status S`           | With `--channel`: `approved`, `rejected`, `unused` (never used on it) or `any`. Default: hide clips rejected for the channel |
 | `--orientation O`      | Only clips with this orientation in the catalog                       |
 | `--min-duration SEC`   | Only clips at least this long in the catalog                          |
+| `--min-similarity X`   | Keep only results whose cosine similarity is at least X (0 to 1). Off by default. Results found by full-text search only have no similarity and are dropped when this is set |
 | `--limit N`            | Number of results, 1 to 50 (default 10)                               |
 
 The search text is never passed to SQLite as query syntax: it is split into

@@ -24,6 +24,7 @@ public final class SearchService {
     public record Hit(
             String key,
             double score,
+            Double similarity,
             Double duration,
             String description,
             Path path,
@@ -44,6 +45,16 @@ public final class SearchService {
      */
     public static Result search(ClipIndex index, Embedder embedder, String embedModel, String query,
             SearchFilter filter, int limit, Path clipbankDir, Map<String, Clip> clips, Catalog catalog) {
+        return search(index, embedder, embedModel, query, filter, limit, clipbankDir, clips, catalog, null);
+    }
+
+    /**
+     * @param minSimilarity when set, only hits with a cosine similarity of at least this value are kept; hits
+     *                      that came from full-text search only have none and are dropped
+     */
+    public static Result search(ClipIndex index, Embedder embedder, String embedModel, String query,
+            SearchFilter filter, int limit, Path clipbankDir, Map<String, Clip> clips, Catalog catalog,
+            Double minSimilarity) {
         if (FtsQuery.match(query) == null) {
             throw new IllegalArgumentException("the query has no searchable words");
         }
@@ -60,7 +71,8 @@ public final class SearchService {
 
         List<String> notes = new ArrayList<>();
         List<String> text = index.ftsSearch(query, CANDIDATES).stream().filter(allowed::contains).toList();
-        List<String> semantic = semanticRanking(index, embedder, embedModel, query, allowed, notes);
+        Map<String, Double> similarity = new HashMap<>();
+        List<String> semantic = semanticRanking(index, embedder, embedModel, query, allowed, notes, similarity);
 
         Map<String, Double> scores = new HashMap<>();
         addRanks(scores, text);
@@ -73,16 +85,25 @@ public final class SearchService {
 
         List<Hit> hits = new ArrayList<>();
         int skipped = 0;
+        int belowMinimum = 0;
         for (String key : ordered) {
             if (hits.size() >= limit) {
                 break;
             }
-            Hit hit = toHit(index, key, scores.get(key), clipbankDir, clips.get(key), entries.get(key));
+            Double sim = similarity.get(key);
+            if (minSimilarity != null && (sim == null || sim < minSimilarity)) {
+                belowMinimum++;
+                continue;
+            }
+            Hit hit = toHit(index, key, scores.get(key), sim, clipbankDir, clips.get(key), entries.get(key));
             if (hit == null) {
                 skipped++;
             } else {
                 hits.add(hit);
             }
+        }
+        if (belowMinimum > 0) {
+            notes.add(belowMinimum + " result(s) dropped by --min-similarity (full-text-only results have no similarity)");
         }
         if (skipped > 0) {
             notes.add(skipped + " result(s) left out: file missing or outside the clip library");
@@ -91,7 +112,7 @@ public final class SearchService {
     }
 
     private static List<String> semanticRanking(ClipIndex index, Embedder embedder, String model, String query,
-            Set<String> allowed, List<String> notes) {
+            Set<String> allowed, List<String> notes, Map<String, Double> similarity) {
         if (embedder == null) {
             notes.add("OLLAMA_URL is not set; using full-text only");
             return List.of();
@@ -114,6 +135,7 @@ public final class SearchService {
                 sims.put(v.getKey(), Vectors.cosine(q, v.getValue()));
             }
         }
+        similarity.putAll(sims);
         return sims.entrySet().stream()
                 .sorted(Map.Entry.<String, Double>comparingByValue(Comparator.reverseOrder())
                         .thenComparing(Map.Entry.comparingByKey()))
@@ -129,7 +151,7 @@ public final class SearchService {
         }
     }
 
-    private static Hit toHit(ClipIndex index, String key, double score, Path clipbankDir, Clip clip,
+    private static Hit toHit(ClipIndex index, String key, double score, Double similarity, Path clipbankDir, Clip clip,
             Catalog.Entry entry) {
         if (clip == null) {
             return null;
@@ -147,7 +169,7 @@ public final class SearchService {
         Map<String, String> status = entry == null || entry.status() == null ? Map.of() : Map.copyOf(entry.status());
         List<String> used = entry == null || entry.uses() == null ? List.of()
                 : entry.uses().stream().map(Catalog.Use::channel).filter(c -> c != null).distinct().sorted().toList();
-        return new Hit(key, score, entry == null ? null : entry.duration(),
+        return new Hit(key, score, similarity, entry == null ? null : entry.duration(),
                 Sanitize.cleanAtWord(stored.description().description(), DESCRIPTION_WIDTH), path, status, used);
     }
 }

@@ -112,6 +112,9 @@ class VisionClientTest {
         assertFalse(req.get("stream").asBoolean());
         assertEquals(0.0, req.get("options").get("temperature").asDouble());
         assertTrue(req.get("messages").get(0).get("content").asText().contains("at most two sentences"));
+        String prompt = req.get("messages").get(0).get("content").asText();
+        assertTrue(prompt.contains("\"The video shows\"") && prompt.contains("\"The clip shows\"")
+                && prompt.contains("\"This video\"") && prompt.contains("start directly with the content"), prompt);
         assertEquals(1, req.get("messages").size());
         assertEquals("user", req.get("messages").get(0).get("role").asText());
         assertEquals(3, req.get("messages").get(0).get("images").size());

@@ -201,4 +201,78 @@ class SearchServiceTest {
     private static List<String> sorted(SearchService.Result r) {
         return r.hits().stream().map(SearchService.Hit::key).sorted().toList();
     }
+
+    @Test
+    void hitsCarryTheirCosineSimilarityOrNoneWhenTheyCameFromFullTextOnly() throws Exception {
+        try (ClipIndex index = index("x", "needle here", "y", "other words", "t", "needle too")) {
+            index.recordEmbedding("src/y", MODEL, new float[] {1, 0});
+            index.recordEmbedding("src/x", MODEL, new float[] {0.8f, 0.6f});
+
+            SearchService.Result r = search(index, t -> new float[] {1, 0}, "needle", SearchFilter.none());
+
+            Map<String, Double> sims = new java.util.HashMap<>();
+            r.hits().forEach(h -> sims.put(h.key(), h.similarity()));
+            assertEquals(1.0, sims.get("src/y"), 1e-6);
+            assertEquals(0.8, sims.get("src/x"), 1e-6);
+            assertTrue(sims.containsKey("src/t") && sims.get("src/t") == null, "no vector, so full-text only");
+        }
+    }
+
+    @Test
+    void minSimilarityDropsLowAndFullTextOnlyHits() throws Exception {
+        try (ClipIndex index = index("x", "needle here", "y", "other words", "z", "more words", "t", "needle too")) {
+            index.recordEmbedding("src/y", MODEL, new float[] {1, 0});
+            index.recordEmbedding("src/x", MODEL, new float[] {0.8f, 0.6f});
+            index.recordEmbedding("src/z", MODEL, new float[] {0, 1});
+            Embedder q = text -> new float[] {1, 0};
+
+            SearchService.Result all = SearchService.search(index, q, MODEL, "needle", SearchFilter.none(), 10,
+                    root, clips, catalog, null);
+            SearchService.Result mid = SearchService.search(index, q, MODEL, "needle", SearchFilter.none(), 10,
+                    root, clips, catalog, 0.5);
+            SearchService.Result high = SearchService.search(index, q, MODEL, "needle", SearchFilter.none(), 10,
+                    root, clips, catalog, 0.9);
+
+            assertEquals(List.of("src/t", "src/x", "src/y", "src/z"), sorted(all));
+            assertEquals(List.of("src/x", "src/y"), sorted(mid));
+            assertTrue(mid.notes().stream().anyMatch(n -> n.contains("2 result(s) dropped by --min-similarity")),
+                    mid.notes().toString());
+            assertEquals(List.of("src/y"), sorted(high));
+        }
+    }
+
+    @Test
+    void minSimilarityKeepsAHitAtExactlyTheThreshold() throws Exception {
+        try (ClipIndex index = index("x", "needle here")) {
+            index.recordEmbedding("src/x", MODEL, new float[] {1, 0});
+
+            SearchService.Result r = SearchService.search(index, t -> new float[] {1, 0}, MODEL, "needle",
+                    SearchFilter.none(), 10, root, clips, catalog, 1.0);
+
+            assertEquals(List.of("src/x"), sorted(r));
+        }
+    }
+
+    @Test
+    void minSimilarityWithoutSemanticSearchDropsEverythingAndSaysSo() throws Exception {
+        try (ClipIndex index = index("x", "needle here")) {
+            SearchService.Result r = SearchService.search(index, null, MODEL, "needle", SearchFilter.none(), 10,
+                    root, clips, catalog, 0.1);
+
+            assertTrue(r.hits().isEmpty());
+            assertTrue(r.notes().stream().anyMatch(n -> n.contains("dropped by --min-similarity")), r.notes().toString());
+        }
+    }
+
+    @Test
+    void minSimilarityIsAppliedBeforeTheLimit() throws Exception {
+        try (ClipIndex index = index("a", "needle", "b", "needle", "c", "needle")) {
+            index.recordEmbedding("src/c", MODEL, new float[] {1, 0});
+
+            SearchService.Result r = SearchService.search(index, t -> new float[] {1, 0}, MODEL, "needle",
+                    SearchFilter.none(), 1, root, clips, catalog, 0.9);
+
+            assertEquals(List.of("src/c"), sorted(r));
+        }
+    }
 }
