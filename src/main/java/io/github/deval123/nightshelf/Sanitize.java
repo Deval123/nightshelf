@@ -54,4 +54,30 @@ final class Sanitize {
             default -> true;
         };
     }
+
+    /**
+     * Like {@link #clean} but, when the text is longer than the cap, cuts at the
+     * last whole word and appends an ellipsis; the result never exceeds the cap.
+     * A single word longer than the cap is cut where it must be.
+     */
+    static String cleanAtWord(String text, int maxCodePoints) {
+        String clean = clean(text, Integer.MAX_VALUE);
+        if (clean.codePointCount(0, clean.length()) <= maxCodePoints) {
+            return clean;
+        }
+        int end = clean.offsetByCodePoints(0, maxCodePoints - 1);
+        String head = clean.substring(0, end);
+        boolean wordEndsHere = clean.charAt(end) == ' ';
+        int lastSpace = head.lastIndexOf(' ');
+        if (!wordEndsHere && lastSpace > 0) {
+            head = head.substring(0, lastSpace);
+        }
+        int len = head.length();
+        while (len > 0 && " ,;:-".indexOf(head.charAt(len - 1)) >= 0) {
+            len--;
+        }
+        return head.substring(0, len) + ELLIPSIS;
+    }
+
+    static final String ELLIPSIS = "\u2026";
 }

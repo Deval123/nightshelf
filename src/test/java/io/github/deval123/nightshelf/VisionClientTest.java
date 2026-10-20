@@ -110,7 +110,8 @@ class VisionClientTest {
         JsonNode req = MAPPER.readTree(bodies.get(0));
         assertEquals("test-model", req.get("model").asText());
         assertFalse(req.get("stream").asBoolean());
-        assertEquals(0, req.get("options").get("temperature").asInt());
+        assertEquals(0.0, req.get("options").get("temperature").asDouble());
+        assertTrue(req.get("messages").get(0).get("content").asText().contains("at most two sentences"));
         assertEquals(1, req.get("messages").size());
         assertEquals("user", req.get("messages").get(0).get("role").asText());
         assertEquals(3, req.get("messages").get(0).get("images").size());
@@ -167,6 +168,41 @@ class VisionClientTest {
         assertTrue(d.subjects().stream().allMatch(s -> s.length() == Description.MAX_SUBJECT));
         assertEquals(Description.MAX_FIELD, d.setting().length());
         assertEquals(Description.MAX_FIELD, d.mood().length());
+    }
+
+    @Test
+    void cutsLongDescriptionAtTheLastWholeWordWithEllipsis() throws Exception {
+        var json = MAPPER.createObjectNode();
+        json.put("description", "word ".repeat(200).trim());
+        json.putArray("subjects");
+        json.put("setting", "s").put("time_of_day", "day").put("mood", "m");
+        script = n -> new Object[] {200, chat(json.toString())};
+
+        String d = client().describe(frames(1)).description();
+
+        assertTrue(d.endsWith("word\u2026"), d);
+        assertTrue(d.codePointCount(0, d.length()) <= Description.MAX_DESCRIPTION);
+        assertTrue(java.util.Arrays.stream(d.substring(0, d.length() - 1).split(" ")).allMatch("word"::equals), d);
+    }
+
+    @Test
+    void firstAttemptUsesTemperatureZeroAndRetryAfterMalformedOutputUsesPointThree() throws Exception {
+        script = n -> n == 0 ? new Object[] {200, chat("{not json")} : new Object[] {200, chat(GOOD)};
+
+        client().describe(frames(1));
+
+        assertEquals(2, bodies.size());
+        assertEquals(0.0, MAPPER.readTree(bodies.get(0)).get("options").get("temperature").asDouble());
+        assertEquals(0.3, MAPPER.readTree(bodies.get(1)).get("options").get("temperature").asDouble());
+    }
+
+    @Test
+    void retryAfterTransientFailureKeepsTemperatureZero() throws Exception {
+        script = n -> n == 0 ? new Object[] {503, "busy"} : new Object[] {200, chat(GOOD)};
+
+        client().describe(frames(1));
+
+        assertEquals(0.0, MAPPER.readTree(bodies.get(1)).get("options").get("temperature").asDouble());
     }
 
     @Test
