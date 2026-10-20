@@ -43,9 +43,11 @@ services:
   # it as http://ollama:11434. Do not publish it on 0.0.0.0.
   ollama:
     profiles: ["ollama"]
-    image: ollama/ollama:0.5.7
+    image: ollama/ollama:0.40.6
     ports:
       - "127.0.0.1:11434:11434"
+    cap_drop:
+      - ALL
     security_opt:
       - no-new-privileges:true
     volumes:
