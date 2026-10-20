@@ -15,7 +15,13 @@ public final class Main {
     private Main() {
     }
 
+    static final List<String> COMMANDS = List.of("scan", "describe", "sync", "run", "stats", "embed", "search");
+
     public static void main(String[] args) throws IOException {
+        if (args.length > 0 && !COMMANDS.contains(args[0])) {
+            fail("unknown command: " + Sanitize.clean(args[0], 40) + "; try: " + String.join(", ", COMMANDS));
+            return;
+        }
         Config config;
         try {
             config = Config.fromEnv();
@@ -38,8 +44,10 @@ public final class Main {
                 search(config, SearchArgs.parse(List.of(args).subList(1, args.length)));
             } else if (args.length == 2 && args[0].equals("describe")) {
                 describe(config, Path.of(args[1]));
-            } else {
+            } else if (args.length == 0) {
                 System.out.println(config);
+            } else {
+                fail("usage: " + args[0] + (args[0].equals("describe") ? " <clip.mp4>" : ""));
             }
         } catch (IllegalArgumentException | IndexException | IOException e) {
             fail("Error: " + e.getMessage());
@@ -167,11 +175,12 @@ public final class Main {
                     : new EmbedClient(config.requireOllamaUrl(), config.embedModel(),
                             index.embeddingDimension(config.embedModel()));
             var result = SearchService.search(index, embedder, config.embedModel(), args.query(), args.filter(),
-                    args.limit(), config.clipbankDir(), clips, catalog);
+                    args.limit(), config.clipbankDir(), clips, catalog, args.minSimilarity());
             result.notes().forEach(n -> System.err.println("note: " + n));
             int rank = 1;
             for (var hit : result.hits()) {
-                System.out.printf(Locale.ROOT, "%d. %s  score %.4f  %s%n", rank++, printable(hit.key()), hit.score(),
+                System.out.printf(Locale.ROOT, "%d. %s  score %.4f  sim %s  %s%n", rank++, printable(hit.key()),
+                        hit.score(), hit.similarity() == null ? "-" : String.format(Locale.ROOT, "%.2f", hit.similarity()),
                         hit.duration() == null ? "?" : String.format(Locale.ROOT, "%.1fs", hit.duration()));
                 System.out.println("   " + hit.description());
                 System.out.println("   status: " + (hit.channelStatus().isEmpty() ? "-"
