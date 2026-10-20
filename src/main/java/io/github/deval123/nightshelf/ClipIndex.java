@@ -24,6 +24,8 @@ import org.sqlite.SQLiteConfig;
 public final class ClipIndex implements AutoCloseable {
 
     static final int MAX_FAILURE_REASON = 300;
+    /** A clip that failed in this many separate runs is left alone unless retries are forced. */
+    static final int MAX_ATTEMPTS = 3;
     private static final int BUSY_TIMEOUT_MS = 5000;
 
     /** One step of the schema; may run Java code (for example a backfill) besides DDL. */
@@ -77,7 +79,24 @@ public final class ClipIndex implements AutoCloseable {
                 vector     BLOB NOT NULL CHECK (length(vector) = dim * 4),
                 created_at INTEGER NOT NULL
             )"""),
-            ClipIndex::createFts);
+            ClipIndex::createFts,
+            Migration.sql(
+                    "ALTER TABLE clips ADD COLUMN attempts INTEGER NOT NULL DEFAULT 0",
+                    """
+                    CREATE TABLE runs (
+                        id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                        started_at    INTEGER NOT NULL,
+                        finished_at   INTEGER,
+                        described     INTEGER NOT NULL DEFAULT 0,
+                        failed        INTEGER NOT NULL DEFAULT 0,
+                        skipped       INTEGER NOT NULL DEFAULT 0,
+                        embedded      INTEGER NOT NULL DEFAULT 0,
+                        total_seconds REAL NOT NULL DEFAULT 0,
+                        avg_seconds   REAL NOT NULL DEFAULT 0,
+                        vision_model  TEXT NOT NULL,
+                        embed_model   TEXT NOT NULL,
+                        stop_reason   TEXT
+                    )"""));
 
     private interface Work<T> {
         T run(Connection c) throws SQLException;
@@ -206,14 +225,25 @@ public final class ClipIndex implements AutoCloseable {
         });
     }
 
-    /** Keys of the clips that still need work (pending or failed), in a stable order. */
+    /** Keys of the clips that still need work: pending, and failed ones that are not given up on. */
     public List<String> toProcess() {
+        return toProcess(false);
+    }
+
+    /**
+     * @param retryFailed also return failed clips that failed in {@link #MAX_ATTEMPTS} separate runs
+     */
+    public List<String> toProcess(boolean retryFailed) {
         return inTransaction(c -> {
             List<String> keys = new ArrayList<>();
-            try (PreparedStatement ps = c.prepareStatement(
-                    "SELECT key FROM clips WHERE removed = 0 AND status IN (?, ?) ORDER BY key")) {
+            try (PreparedStatement ps = c.prepareStatement("""
+                    SELECT key FROM clips
+                    WHERE removed = 0 AND (status = ? OR (status = ? AND (attempts < ? OR ? = 1)))
+                    ORDER BY key""")) {
                 ps.setString(1, StoredClip.Status.PENDING.db());
                 ps.setString(2, StoredClip.Status.FAILED.db());
+                ps.setInt(3, MAX_ATTEMPTS);
+                ps.setInt(4, retryFailed ? 1 : 0);
                 try (ResultSet rs = ps.executeQuery()) {
                     while (rs.next()) {
                         keys.add(rs.getString(1));
@@ -224,12 +254,115 @@ public final class ClipIndex implements AutoCloseable {
         });
     }
 
+    /** What {@link #sync} would do, without writing anything. */
+    public ChangeDetector.Changes preview(List<Clip> scanned) {
+        return inTransaction(c -> ChangeDetector.detect(known(c), scanned));
+    }
+
+    /** Counts over the index; {@code embedModel} decides which vectors count as current. */
+    public IndexTotals totals(String embedModel) {
+        return inTransaction(c -> {
+            int[] n = new int[7];
+            try (PreparedStatement ps = c.prepareStatement("""
+                    SELECT
+                        COALESCE(SUM(CASE WHEN removed = 0 THEN 1 ELSE 0 END), 0),
+                        COALESCE(SUM(CASE WHEN removed = 0 AND status = ? THEN 1 ELSE 0 END), 0),
+                        COALESCE(SUM(CASE WHEN removed = 0 AND status = ? THEN 1 ELSE 0 END), 0),
+                        COALESCE(SUM(CASE WHEN removed = 0 AND status = ? THEN 1 ELSE 0 END), 0),
+                        COALESCE(SUM(CASE WHEN removed = 0 AND status = ? AND attempts >= ? THEN 1 ELSE 0 END), 0),
+                        COALESCE(SUM(CASE WHEN removed = 1 THEN 1 ELSE 0 END), 0)
+                    FROM clips""")) {
+                ps.setString(1, StoredClip.Status.PENDING.db());
+                ps.setString(2, StoredClip.Status.DESCRIBED.db());
+                ps.setString(3, StoredClip.Status.FAILED.db());
+                ps.setString(4, StoredClip.Status.FAILED.db());
+                ps.setInt(5, MAX_ATTEMPTS);
+                try (ResultSet rs = ps.executeQuery()) {
+                    rs.next();
+                    for (int i = 0; i < 6; i++) {
+                        n[i] = rs.getInt(i + 1);
+                    }
+                }
+            }
+            try (PreparedStatement ps = c.prepareStatement("""
+                    SELECT COUNT(*) FROM clip_embeddings e JOIN clips c ON c.key = e.clip_key
+                    WHERE e.model = ? AND c.removed = 0 AND c.status = ?""")) {
+                ps.setString(1, embedModel);
+                ps.setString(2, StoredClip.Status.DESCRIBED.db());
+                try (ResultSet rs = ps.executeQuery()) {
+                    rs.next();
+                    n[6] = rs.getInt(1);
+                }
+            }
+            return new IndexTotals(n[0], n[1], n[2], n[3], n[4], n[6], n[5]);
+        });
+    }
+
+    // ---- runs -------------------------------------------------------------
+
+    /** Opens a run record; it stays unfinished if the process is killed. */
+    public long startRun(String visionModel, String embedModel) {
+        return inTransaction(c -> {
+            try (PreparedStatement ps = c.prepareStatement(
+                    "INSERT INTO runs (started_at, vision_model, embed_model) VALUES (?, ?, ?)",
+                    Statement.RETURN_GENERATED_KEYS)) {
+                ps.setLong(1, clock.millis());
+                ps.setString(2, visionModel);
+                ps.setString(3, embedModel);
+                ps.executeUpdate();
+                try (ResultSet rs = ps.getGeneratedKeys()) {
+                    rs.next();
+                    return rs.getLong(1);
+                }
+            }
+        });
+    }
+
+    public void finishRun(long id, int described, int failed, int skipped, int embedded, double totalSeconds,
+            double avgSecondsPerClip, String stopReason) {
+        inTransaction(c -> {
+            try (PreparedStatement ps = c.prepareStatement("""
+                    UPDATE runs SET finished_at = ?, described = ?, failed = ?, skipped = ?, embedded = ?,
+                        total_seconds = ?, avg_seconds = ?, stop_reason = ?
+                    WHERE id = ?""")) {
+                ps.setLong(1, clock.millis());
+                ps.setInt(2, described);
+                ps.setInt(3, failed);
+                ps.setInt(4, skipped);
+                ps.setInt(5, embedded);
+                ps.setDouble(6, totalSeconds);
+                ps.setDouble(7, avgSecondsPerClip);
+                ps.setString(8, stopReason);
+                ps.setLong(9, id);
+                requireUpdated(ps.executeUpdate(), "run " + id);
+            }
+            return null;
+        });
+    }
+
+    public Optional<RunRecord> lastRun() {
+        return inTransaction(c -> {
+            try (PreparedStatement ps = c.prepareStatement("""
+                    SELECT id, started_at, finished_at, described, failed, skipped, embedded, total_seconds,
+                        avg_seconds, vision_model, embed_model, stop_reason
+                    FROM runs ORDER BY id DESC LIMIT 1""");
+                    ResultSet rs = ps.executeQuery()) {
+                if (!rs.next()) {
+                    return Optional.empty();
+                }
+                return Optional.of(new RunRecord(rs.getLong(1), rs.getLong(2), rs.getLong(3), rs.getInt(4),
+                        rs.getInt(5), rs.getInt(6), rs.getInt(7), rs.getDouble(8), rs.getDouble(9),
+                        rs.getString(10), rs.getString(11), rs.getString(12)));
+            }
+        });
+    }
+
     /** Stores the result for one clip in its own transaction. */
     public void recordDescribed(String key, Description d) {
         inTransaction(c -> {
             try (PreparedStatement ps = c.prepareStatement("""
                 UPDATE clips SET status = ?, description = ?, setting = ?, time_of_day = ?, mood = ?,
-                failure_reason = NULL, updated_at = ? WHERE key = ?
+                failure_reason = NULL, attempts = 0, updated_at = ? WHERE key = ?
                 """)) {
                 ps.setString(1, StoredClip.Status.DESCRIBED.db());
                 ps.setString(2, d.description());
@@ -260,7 +393,7 @@ public final class ClipIndex implements AutoCloseable {
     public void recordFailed(String key, String reason) {
         inTransaction(c -> {
             try (PreparedStatement ps = c.prepareStatement(
-                    "UPDATE clips SET status = ?, failure_reason = ?, updated_at = ? WHERE key = ?")) {
+                    "UPDATE clips SET status = ?, failure_reason = ?, attempts = attempts + 1, updated_at = ? WHERE key = ?")) {
                 ps.setString(1, StoredClip.Status.FAILED.db());
                 ps.setString(2, Sanitize.clean(reason, MAX_FAILURE_REASON));
                 ps.setLong(3, clock.millis());
@@ -535,7 +668,7 @@ public final class ClipIndex implements AutoCloseable {
         deleteEmbedding(c, clip.key());
         try (PreparedStatement ps = c.prepareStatement("""
                 UPDATE clips SET size = ?, mtime = ?, status = ?, description = NULL, setting = NULL,
-                time_of_day = NULL, mood = NULL, failure_reason = NULL, removed = 0, updated_at = ?
+                time_of_day = NULL, mood = NULL, failure_reason = NULL, attempts = 0, removed = 0, updated_at = ?
                 WHERE key = ?
                 """)) {
             ps.setLong(1, clip.size());

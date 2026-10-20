@@ -69,8 +69,8 @@ class ClipIndexSearchTest {
         }
 
         try (ClipIndex index = open()) {
-            assertEquals(3, ClipIndex.MIGRATIONS.size());
-            assertEquals(3, index.schemaVersion());
+            assertEquals(4, ClipIndex.MIGRATIONS.size());
+            assertEquals(4, index.schemaVersion());
             assertEquals(List.of("src/a"), index.ftsSearch("umbrella", 10));
             assertEquals(List.of("src/a"), index.toEmbed("m"));
             index.recordEmbedding("src/a", "m", new float[] {1, 2});

@@ -1,0 +1,66 @@
+# The indexer only. Ollama is a separate, optional profile (see below).
+#
+#   cp .env.example .env     # then edit it; .env is git-ignored
+#   docker compose run --rm indexer run
+#   docker compose run --rm indexer stats
+services:
+  indexer:
+    build: .
+    image: nightshelf:local
+    command: ["run"]
+    user: "10001:10001"
+    read_only: true
+    # Frames and the SQLite native library are written here. exec is needed
+    # because the library is loaded from this directory.
+    tmpfs:
+      - /tmp:rw,exec,nosuid,nodev,size=512m,mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      CLIPBANK_DIR: /clipbank
+      DB_PATH: /data/index.db
+      OLLAMA_URL: ${OLLAMA_URL:?set OLLAMA_URL in .env}
+      VISION_MODEL: ${VISION_MODEL:-gemma3:4b}
+      EMBED_MODEL: ${EMBED_MODEL:-nomic-embed-text}
+      FRAME_COUNT: ${FRAME_COUNT:-3}
+    volumes:
+      # The clip library is mounted read-only.
+      - type: bind
+        source: ${CLIPBANK_HOST_DIR:?set CLIPBANK_HOST_DIR in .env}
+        target: /clipbank
+        read_only: true
+      # The index lives on a local named volume, never on a network mount.
+      - index:/data
+    # Lets a stop (SIGTERM) finish the clip in progress and print the summary.
+    stop_grace_period: 2m
+    restart: "no"
+
+  # Optional, with an NVIDIA GPU:  docker compose --profile ollama up -d ollama
+  # Ollama has no authentication. Its port is published on the loopback
+  # interface of this host only, and containers on this compose network reach
+  # it as http://ollama:11434. Do not publish it on 0.0.0.0.
+  ollama:
+    profiles: ["ollama"]
+    image: ollama/ollama:0.40.6
+    ports:
+      - "127.0.0.1:11434:11434"
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    volumes:
+      - ollama-models:/root/.ollama
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    restart: unless-stopped
+
+volumes:
+  index:
+  ollama-models:
