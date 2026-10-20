@@ -56,8 +56,9 @@ class ClipIndexTest {
 
     @Test
     void appliesLaterMigrationsInOrder() {
-        List<List<String>> v1 = ClipIndex.MIGRATIONS;
-        List<List<String>> v2 = List.of(v1.get(0), List.of("ALTER TABLE clips ADD COLUMN extra TEXT"));
+        List<ClipIndex.Migration> v1 = ClipIndex.MIGRATIONS.subList(0, 1);
+        List<ClipIndex.Migration> v2 = List.of(v1.get(0),
+                ClipIndex.Migration.sql("ALTER TABLE clips ADD COLUMN extra TEXT"));
         try (ClipIndex index = ClipIndex.open(db(), v1, CLOCK)) {
             assertEquals(1, index.schemaVersion());
         }
@@ -79,11 +80,12 @@ class ClipIndexTest {
 
     @Test
     void refusesAnIndexNewerThanTheMigrationsEvenAfterAnOlderRelease() throws Exception {
-        List<List<String>> v2 = List.of(ClipIndex.MIGRATIONS.get(0), List.of("ALTER TABLE clips ADD COLUMN x TEXT"));
-        ClipIndex.open(db(), v2, CLOCK).close();
+        List<ClipIndex.Migration> older = ClipIndex.MIGRATIONS.subList(0, 1);
+        ClipIndex.open(db(), older, CLOCK).close();
+        setVersion(ClipIndex.MIGRATIONS.size() + 1);
 
         assertThrows(IndexException.class, this::open);
-        assertEquals(2, readVersion());
+        assertEquals(ClipIndex.MIGRATIONS.size() + 1, readVersion());
     }
 
     @Test

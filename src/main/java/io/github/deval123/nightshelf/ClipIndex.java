@@ -26,8 +26,24 @@ public final class ClipIndex implements AutoCloseable {
     static final int MAX_FAILURE_REASON = 300;
     private static final int BUSY_TIMEOUT_MS = 5000;
 
+    /** One step of the schema; may run Java code (for example a backfill) besides DDL. */
+    @FunctionalInterface
+    interface Migration {
+        void apply(Connection c) throws SQLException;
+
+        static Migration sql(String... statements) {
+            return c -> {
+                try (Statement s = c.createStatement()) {
+                    for (String sql : statements) {
+                        s.execute(sql);
+                    }
+                }
+            };
+        }
+    }
+
     /** Ordered migrations; entry i takes the schema from version i to i+1. */
-    static final List<List<String>> MIGRATIONS = List.of(List.of(
+    static final List<Migration> MIGRATIONS = List.of(Migration.sql(
             """
             CREATE TABLE clips (
                 key            TEXT PRIMARY KEY,
@@ -52,7 +68,16 @@ public final class ClipIndex implements AutoCloseable {
                 subject  TEXT NOT NULL,
                 PRIMARY KEY (clip_key, position)
             )""",
-            "CREATE INDEX clips_status ON clips (status, removed)"));
+            "CREATE INDEX clips_status ON clips (status, removed)"),
+            Migration.sql("""
+            CREATE TABLE clip_embeddings (
+                clip_key   TEXT PRIMARY KEY REFERENCES clips (key) ON DELETE CASCADE,
+                model      TEXT NOT NULL,
+                dim        INTEGER NOT NULL CHECK (dim > 0),
+                vector     BLOB NOT NULL CHECK (length(vector) = dim * 4),
+                created_at INTEGER NOT NULL
+            )"""),
+            ClipIndex::createFts);
 
     private interface Work<T> {
         T run(Connection c) throws SQLException;
@@ -70,7 +95,7 @@ public final class ClipIndex implements AutoCloseable {
         return open(dbFile, MIGRATIONS, Clock.systemUTC());
     }
 
-    static ClipIndex open(Path dbFile, List<List<String>> migrations, Clock clock) {
+    static ClipIndex open(Path dbFile, List<Migration> migrations, Clock clock) {
         NetworkFilesystem.requireLocal(dbFile);
         try {
             Files.createDirectories(dbFile.toAbsolutePath().getParent());
@@ -108,7 +133,7 @@ public final class ClipIndex implements AutoCloseable {
         }
     }
 
-    private static void migrate(Connection c, List<List<String>> migrations) throws SQLException {
+    private static void migrate(Connection c, List<Migration> migrations) throws SQLException {
         try (Statement s = c.createStatement()) {
             s.execute("CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL)");
         }
@@ -120,10 +145,8 @@ public final class ClipIndex implements AutoCloseable {
         }
         for (int v = current; v < migrations.size(); v++) {
             c.setAutoCommit(false);
-            try (Statement s = c.createStatement()) {
-                for (String sql : migrations.get(v)) {
-                    s.execute(sql);
-                }
+            try {
+                migrations.get(v).apply(c);
                 try (PreparedStatement del = c.prepareStatement("DELETE FROM schema_version")) {
                     del.executeUpdate();
                 }
@@ -227,6 +250,8 @@ public final class ClipIndex implements AutoCloseable {
                     ps.executeUpdate();
                 }
             }
+            deleteEmbedding(c, key);
+            syncFts(c, key);
             return null;
         });
     }
@@ -242,6 +267,7 @@ public final class ClipIndex implements AutoCloseable {
                 ps.setString(4, key);
                 requireUpdated(ps.executeUpdate(), key);
             }
+            syncFts(c, key);
             return null;
         });
     }
@@ -269,6 +295,187 @@ public final class ClipIndex implements AutoCloseable {
                 }
             }
         });
+    }
+
+    // ---- embeddings -------------------------------------------------------
+
+    /** Described, present clips that have no vector for this embedding model (none, or one from another model). */
+    public List<String> toEmbed(String model) {
+        return inTransaction(c -> {
+            List<String> keys = new ArrayList<>();
+            try (PreparedStatement ps = c.prepareStatement("""
+                    SELECT c.key FROM clips c
+                    LEFT JOIN clip_embeddings e ON e.clip_key = c.key AND e.model = ?
+                    WHERE c.status = ? AND c.removed = 0 AND e.clip_key IS NULL
+                    ORDER BY c.key""")) {
+                ps.setString(1, model);
+                ps.setString(2, StoredClip.Status.DESCRIBED.db());
+                try (ResultSet rs = ps.executeQuery()) {
+                    while (rs.next()) {
+                        keys.add(rs.getString(1));
+                    }
+                }
+            }
+            return keys;
+        });
+    }
+
+    /** The dimension of the vectors stored for this model, or null if there are none. */
+    public Integer embeddingDimension(String model) {
+        return inTransaction(c -> embeddingDimension(c, model));
+    }
+
+    private static Integer embeddingDimension(Connection c, String model) throws SQLException {
+        try (PreparedStatement ps = c.prepareStatement("SELECT dim FROM clip_embeddings WHERE model = ? LIMIT 1")) {
+            ps.setString(1, model);
+            try (ResultSet rs = ps.executeQuery()) {
+                return rs.next() ? rs.getInt(1) : null;
+            }
+        }
+    }
+
+    /** Stores (or replaces) the vector of one clip in its own transaction. */
+    public void recordEmbedding(String key, String model, float[] vector) {
+        if (vector.length == 0 || !Vectors.allFinite(vector)) {
+            throw new IndexException("Refusing to store an empty or non-finite vector for " + key);
+        }
+        inTransaction(c -> {
+            Integer existing = embeddingDimension(c, model);
+            if (existing != null && existing != vector.length) {
+                throw new IndexException("Vector for " + key + " has " + vector.length
+                        + " dimensions but the index uses " + existing + " for model " + model);
+            }
+            try (PreparedStatement ps = c.prepareStatement("""
+                    INSERT INTO clip_embeddings (clip_key, model, dim, vector, created_at) VALUES (?, ?, ?, ?, ?)
+                    ON CONFLICT (clip_key) DO UPDATE SET model = excluded.model, dim = excluded.dim,
+                        vector = excluded.vector, created_at = excluded.created_at""")) {
+                ps.setString(1, key);
+                ps.setString(2, model);
+                ps.setInt(3, vector.length);
+                ps.setBytes(4, Vectors.toBlob(vector));
+                ps.setLong(5, clock.millis());
+                ps.executeUpdate();
+            } catch (SQLException e) {
+                if (e.getMessage() != null && e.getMessage().contains("FOREIGN KEY")) {
+                    throw new IndexException("Clip not in the index: " + key);
+                }
+                throw e;
+            }
+            return null;
+        });
+    }
+
+    /** Current vectors (this model only) of described clips that are not removed, by key. */
+    public Map<String, float[]> currentEmbeddings(String model) {
+        return inTransaction(c -> {
+            Map<String, float[]> out = new HashMap<>();
+            try (PreparedStatement ps = c.prepareStatement("""
+                    SELECT e.clip_key, e.vector FROM clip_embeddings e
+                    JOIN clips c ON c.key = e.clip_key
+                    WHERE e.model = ? AND c.status = ? AND c.removed = 0""")) {
+                ps.setString(1, model);
+                ps.setString(2, StoredClip.Status.DESCRIBED.db());
+                try (ResultSet rs = ps.executeQuery()) {
+                    while (rs.next()) {
+                        out.put(rs.getString(1), Vectors.fromBlob(rs.getBytes(2)));
+                    }
+                }
+            }
+            return out;
+        });
+    }
+
+    private static void deleteEmbedding(Connection c, String key) throws SQLException {
+        try (PreparedStatement ps = c.prepareStatement("DELETE FROM clip_embeddings WHERE clip_key = ?")) {
+            ps.setString(1, key);
+            ps.executeUpdate();
+        }
+    }
+
+    // ---- full-text search -------------------------------------------------
+
+    /**
+     * Keys of matching clips, best first (ties by key). The text is turned into
+     * quoted words by {@link FtsQuery}, so it can never act as FTS syntax.
+     * Removed and undescribed clips are never returned.
+     */
+    public List<String> ftsSearch(String userText, int limit) {
+        String match = FtsQuery.match(userText);
+        if (match == null) {
+            return List.of();
+        }
+        return inTransaction(c -> {
+            List<String> keys = new ArrayList<>();
+            try (PreparedStatement ps = c.prepareStatement("""
+                    SELECT clips_fts.key FROM clips_fts
+                    JOIN clips c ON c.key = clips_fts.key
+                    WHERE clips_fts MATCH ? AND c.removed = 0 AND c.status = ?
+                    ORDER BY bm25(clips_fts), clips_fts.key
+                    LIMIT ?""")) {
+                ps.setString(1, match);
+                ps.setString(2, StoredClip.Status.DESCRIBED.db());
+                ps.setInt(3, limit);
+                try (ResultSet rs = ps.executeQuery()) {
+                    while (rs.next()) {
+                        keys.add(rs.getString(1));
+                    }
+                }
+            }
+            return keys;
+        });
+    }
+
+    /** Migration 3: the FTS5 table, filled from the clips that are already described. */
+    private static void createFts(Connection c) throws SQLException {
+        try (Statement s = c.createStatement()) {
+            s.execute("""
+                    CREATE VIRTUAL TABLE clips_fts USING fts5 (
+                        key UNINDEXED, body, tokenize = "unicode61 remove_diacritics 2")""");
+        }
+        List<String> keys = new ArrayList<>();
+        try (PreparedStatement ps = c.prepareStatement("SELECT key FROM clips WHERE status = ? AND removed = 0");) {
+            ps.setString(1, StoredClip.Status.DESCRIBED.db());
+            try (ResultSet rs = ps.executeQuery()) {
+                while (rs.next()) {
+                    keys.add(rs.getString(1));
+                }
+            }
+        }
+        for (String key : keys) {
+            syncFts(c, key);
+        }
+    }
+
+    /**
+     * Makes the FTS row of one clip match the clips table: present when the
+     * clip is described and not removed, absent otherwise. Called by every
+     * write that can change that.
+     */
+    private static void syncFts(Connection c, String key) throws SQLException {
+        try (PreparedStatement ps = c.prepareStatement("DELETE FROM clips_fts WHERE key = ?")) {
+            ps.setString(1, key);
+            ps.executeUpdate();
+        }
+        String body = null;
+        try (PreparedStatement ps = c.prepareStatement("""
+                SELECT description, setting, time_of_day, mood FROM clips
+                WHERE key = ? AND status = ? AND removed = 0 AND description IS NOT NULL""")) {
+            ps.setString(1, key);
+            ps.setString(2, StoredClip.Status.DESCRIBED.db());
+            try (ResultSet rs = ps.executeQuery()) {
+                if (rs.next()) {
+                    body = new Description(rs.getString(1), subjects(c, key), rs.getString(2),
+                            rs.getString(3), rs.getString(4)).searchText();
+                }
+            }
+        }
+        if (body != null) {
+            try (PreparedStatement ps = c.prepareStatement("INSERT INTO clips_fts (key, body) VALUES (?, ?)")) {
+                ps.setString(1, key);
+                ps.setString(2, body);
+                ps.executeUpdate();
+            }
+        }
     }
 
     private static List<String> subjects(Connection c, String key) throws SQLException {
@@ -325,6 +532,7 @@ public final class ClipIndex implements AutoCloseable {
 
     private static void resetToPending(Connection c, Clip clip, long now) throws SQLException {
         deleteSubjects(c, clip.key());
+        deleteEmbedding(c, clip.key());
         try (PreparedStatement ps = c.prepareStatement("""
                 UPDATE clips SET size = ?, mtime = ?, status = ?, description = NULL, setting = NULL,
                 time_of_day = NULL, mood = NULL, failure_reason = NULL, removed = 0, updated_at = ?
@@ -337,6 +545,7 @@ public final class ClipIndex implements AutoCloseable {
             ps.setString(5, clip.key());
             ps.executeUpdate();
         }
+        syncFts(c, clip.key());
     }
 
     private static void setRemoved(Connection c, String key, boolean removed, long now) throws SQLException {
@@ -346,6 +555,7 @@ public final class ClipIndex implements AutoCloseable {
             ps.setString(3, key);
             ps.executeUpdate();
         }
+        syncFts(c, key);
     }
 
     private static void deleteSubjects(Connection c, String key) throws SQLException {
