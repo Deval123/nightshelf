@@ -1,0 +1,12 @@
+.git
+.idea
+target
+.env
+.env.*
+*.db
+*.db-wal
+*.db-shm
+*.mp4
+*.jpg
+catalog.json
+PLAN.md

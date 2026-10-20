@@ -28,6 +28,10 @@ public final class Main {
                 scan(config);
             } else if (args.length > 0 && args[0].equals("sync")) {
                 sync(config);
+            } else if (args.length > 0 && args[0].equals("run")) {
+                run(config, RunArgs.parse(List.of(args).subList(1, args.length)));
+            } else if (args.length == 1 && args[0].equals("stats")) {
+                stats(config);
             } else if (args.length > 0 && args[0].equals("embed")) {
                 embed(config);
             } else if (args.length > 0 && args[0].equals("search")) {
@@ -59,6 +63,68 @@ public final class Main {
         var clips = LibraryScanner.scan(config.clipbankDir());
         long uncatalogued = clips.stream().filter(c -> !c.catalogued()).count();
         System.out.println(clips.size() + " clips (" + uncatalogued + " not in catalog)");
+    }
+
+    /** The full pass: scan, sync, describe, embed. Stops cleanly on SIGINT and SIGTERM. */
+    private static void run(Config config, RunArgs args) throws IOException {
+        requireClipbank(config);
+        URI url = config.requireOllamaUrl();
+        Catalog catalog = LibraryScanner.loadCatalog(config.clipbankDir());
+        List<Clip> clips = LibraryScanner.scan(config.clipbankDir(), catalog);
+        StopSignal stop = new StopSignal();
+        Thread hook = new Thread(() -> {
+            if (stop.isFinished()) {
+                return;
+            }
+            stop.request();
+            System.err.println("stop requested: finishing the current clip");
+            try {
+                stop.awaitFinished();
+            } catch (InterruptedException e) {
+                return;
+            }
+            // a clean stop is a success; halt skips the JVM's 130/143 exit status
+            Runtime.getRuntime().halt(0);
+        }, "stop-on-signal");
+        Runtime.getRuntime().addShutdownHook(hook);
+        int exit;
+        try (ClipIndex index = ClipIndex.open(config.dbPath())) {
+            var extractor = new FrameExtractor(config.clipbankDir(), config.frameCount());
+            var vision = new VisionClient(url, config.visionModel());
+            Embedder embedder = args.skipEmbed() ? null
+                    : new EmbedClient(url, config.embedModel(), index.embeddingDimension(config.embedModel()));
+            var runner = new BatchRunner(index, new FrameDescriber(extractor, vision), embedder,
+                    config.visionModel(), config.embedModel(), stop, System::nanoTime, System.out);
+            var outcome = runner.run(clips, new BatchRunner.Options(args.maxClips(), args.timeBudget(),
+                    args.skipEmbed(), args.retryFailed(), args.allowMassRemoval()));
+            if (outcome.message() != null) {
+                System.err.println(outcome.message());
+            }
+            exit = outcome.exitCode();
+        } finally {
+            stop.markFinished();
+        }
+        if (exit != 0) {
+            System.exit(exit);
+        }
+    }
+
+    private static void stats(Config config) {
+        try (ClipIndex index = ClipIndex.open(config.dbPath())) {
+            index.lastRun().ifPresentOrElse(r -> {
+                System.out.println("last run #" + r.id() + " started " + java.time.Instant.ofEpochMilli(r.startedAt())
+                        + (r.finished() ? ", " + r.stopReason() : ", not finished (interrupted?)"));
+                System.out.println(String.format(Locale.ROOT,
+                        "  described %d, failed %d, left alone %d, embedded %d; %.1fs in total, %.1fs per described clip",
+                        r.described(), r.failed(), r.skipped(), r.embedded(), r.totalSeconds(), r.avgSecondsPerClip()));
+                System.out.println("  models: " + printable(r.visionModel()) + ", " + printable(r.embedModel()));
+            }, () -> System.out.println("no run yet"));
+            var t = index.totals(config.embedModel());
+            System.out.println("index: " + t.present() + " clips, " + t.described() + " described, " + t.pending()
+                    + " pending, " + t.failed() + " failed (" + t.givenUp() + " given up after "
+                    + ClipIndex.MAX_ATTEMPTS + " runs), " + t.embedded() + " embedded with " + printable(config.embedModel())
+                    + ", " + t.removed() + " removed");
+        }
     }
 
     private static final int MAX_CONSECUTIVE_EMBED_FAILURES = 5;
