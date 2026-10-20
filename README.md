@@ -10,6 +10,7 @@ Work in progress: see the open issues for the roadmap.
 
 - Java 21
 - Maven 3.9+
+- ffmpeg and ffprobe on the PATH (frame extraction)
 
 ## Build
 
@@ -28,6 +29,7 @@ All settings come from environment variables.
 | `OLLAMA_URL`  | none                     | Base URL of the Ollama API                   |
 | `VISION_MODEL`| `gemma3:4b`              | Vision model used to describe frames         |
 | `EMBED_MODEL` | `nomic-embed-text`       | Embedding model used for vector search       |
+| `FRAME_COUNT` | `3`                      | Frames extracted per clip                    |
 
 Print the effective configuration:
 
