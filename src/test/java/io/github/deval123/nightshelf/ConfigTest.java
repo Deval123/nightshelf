@@ -2,6 +2,7 @@ package io.github.deval123.nightshelf;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.nio.file.Path;
@@ -21,6 +22,7 @@ class ConfigTest {
         assertEquals(HOME.resolve(".nightshelf").resolve("index.db"), config.dbPath());
         assertEquals(Config.DEFAULT_VISION_MODEL, config.visionModel());
         assertEquals(Config.DEFAULT_EMBED_MODEL, config.embedModel());
+        assertEquals(3, config.frameCount());
     }
 
     @Test
@@ -50,5 +52,12 @@ class ConfigTest {
     @Test
     void toStringMarksUnsetValues() {
         assertTrue(Config.from(Map.of(), HOME).toString().contains("CLIPBANK_DIR=<unset>"));
+    }
+
+    @Test
+    void readsFrameCountAndRejectsInvalidValues() {
+        assertEquals(5, Config.from(Map.of("FRAME_COUNT", "5"), HOME).frameCount());
+        assertThrows(IllegalArgumentException.class, () -> Config.from(Map.of("FRAME_COUNT", "0"), HOME));
+        assertThrows(IllegalArgumentException.class, () -> Config.from(Map.of("FRAME_COUNT", "x"), HOME));
     }
 }
