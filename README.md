@@ -43,3 +43,21 @@ ffmpeg and a running Ollama):
 ```
 java -jar target/nightshelf-0.1.0-SNAPSHOT.jar describe /path/to/clip.mp4
 ```
+
+Scan the library and update the index (no model is called). Added clips become
+pending, changed clips go back to pending, clips that vanished are flagged as
+removed (never deleted), and a removed clip that comes back is un-flagged:
+
+```
+java -jar target/nightshelf-0.1.0-SNAPSHOT.jar sync
+```
+
+The index refuses to open on a network filesystem (SMB, NFS, AFP and similar):
+SQLite locking and WAL are not reliable there. It exits with status 2; point
+`DB_PATH` at a local disk.
+
+## Security note
+
+Traffic to Ollama is plain `http` (unencrypted), and so are the frames sent in
+each request. Run Ollama on `localhost`, on a trusted LAN, or reach it through
+an SSH tunnel (for example `ssh -L 11434:localhost:11434 host`).

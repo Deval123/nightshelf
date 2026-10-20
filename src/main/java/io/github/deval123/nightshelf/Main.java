@@ -19,13 +19,27 @@ public final class Main {
         try {
             if (args.length > 0 && args[0].equals("scan")) {
                 scan(config);
+            } else if (args.length > 0 && args[0].equals("sync")) {
+                sync(config);
             } else if (args.length == 2 && args[0].equals("describe")) {
                 describe(config, Path.of(args[1]));
             } else {
                 System.out.println(config);
             }
-        } catch (IllegalArgumentException e) {
+        } catch (IllegalArgumentException | IndexException | IOException e) {
             fail("Error: " + e.getMessage());
+        }
+    }
+
+    /** Scans the library and updates the index; no model is called. */
+    private static void sync(Config config) throws IOException {
+        requireClipbank(config);
+        var clips = LibraryScanner.scan(config.clipbankDir());
+        try (ClipIndex index = ClipIndex.open(config.dbPath())) {
+            var changes = index.sync(clips);
+            System.out.println(changes.added().size() + " added, " + changes.changed().size() + " changed, "
+                    + changes.unchanged().size() + " unchanged, " + changes.removed().size() + " removed; "
+                    + index.toProcess().size() + " to describe");
         }
     }
 
