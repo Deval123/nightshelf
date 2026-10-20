@@ -7,7 +7,10 @@ import java.util.Map;
 /** Compares a fresh scan with the previously known state of the library. */
 public final class ChangeDetector {
 
-    /** What was recorded for a clip the last time it was indexed. */
+    /**
+     * What was recorded for a clip the last time it was indexed. Mtimes are
+     * compared at one-second precision because network mounts differ.
+     */
     public record Known(long size, long mtimeMillis) {
     }
 
@@ -29,7 +32,7 @@ public final class ChangeDetector {
             Known old = known.get(clip.key());
             if (old == null) {
                 added.add(clip);
-            } else if (old.size() != clip.size() || old.mtimeMillis() != clip.mtimeMillis()) {
+            } else if (old.size() != clip.size() || old.mtimeMillis() / 1000 != clip.mtimeMillis() / 1000) {
                 changed.add(clip);
             } else {
                 unchanged.add(clip);

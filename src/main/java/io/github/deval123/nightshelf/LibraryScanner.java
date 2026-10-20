@@ -2,6 +2,7 @@ package io.github.deval123.nightshelf;
 
 import java.io.IOException;
 import java.nio.file.Files;
+import java.nio.file.LinkOption;
 import java.nio.file.NoSuchFileException;
 import java.nio.file.Path;
 import java.util.ArrayList;
@@ -29,8 +30,13 @@ public final class LibraryScanner {
         Catalog catalog = Files.exists(catalogFile) ? Catalog.read(catalogFile) : Catalog.empty();
 
         List<Clip> clips = new ArrayList<>();
-        for (Path sourceDir : list(clipbankDir.resolve(CLIPS_DIR))) {
-            if (!Files.isDirectory(sourceDir)) {
+        Path clipsDir = clipbankDir.resolve(CLIPS_DIR);
+        if (Files.isSymbolicLink(clipsDir)) {
+            return clips;
+        }
+        for (Path sourceDir : list(clipsDir)) {
+            // Symlinks are never followed, so nothing outside CLIPBANK_DIR is listed.
+            if (!Files.isDirectory(sourceDir, LinkOption.NOFOLLOW_LINKS)) {
                 continue;
             }
             String source = sourceDir.getFileName().toString();
@@ -47,7 +53,7 @@ public final class LibraryScanner {
         String name = file.getFileName().toString();
         return !name.startsWith("._")
                 && name.toLowerCase(Locale.ROOT).endsWith(".mp4")
-                && Files.isRegularFile(file);
+                && Files.isRegularFile(file, LinkOption.NOFOLLOW_LINKS);
     }
 
     private static Clip toClip(String source, Path file, Catalog catalog) throws IOException {
@@ -61,7 +67,7 @@ public final class LibraryScanner {
                 Files.getLastModifiedTime(file).toMillis(),
                 entry != null,
                 entry != null && entry.status() != null ? Map.copyOf(entry.status()) : Map.of(),
-                entry != null && entry.uses() != null ? entry.uses() : 0);
+                entry != null && entry.uses() != null ? entry.uses().size() : 0);
     }
 
     private static List<Path> list(Path dir) throws IOException {

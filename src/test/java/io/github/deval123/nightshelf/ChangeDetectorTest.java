@@ -24,12 +24,23 @@ class ChangeDetectorTest {
         var changes = ChangeDetector.detect(known, List.of(
                 clip("same", 10, 100),
                 clip("resized", 11, 100),
-                clip("touched", 10, 101),
+                clip("touched", 10, 2_100),
                 clip("new", 5, 5)));
 
         assertEquals(List.of("s/new"), changes.added().stream().map(Clip::key).toList());
         assertEquals(List.of("s/resized", "s/touched"), changes.changed().stream().map(Clip::key).toList());
         assertEquals(List.of("s/same"), changes.unchanged().stream().map(Clip::key).toList());
         assertEquals(List.of("s/gone"), changes.removed());
+    }
+
+    @Test
+    void ignoresSubSecondMtimeDifferences() {
+        var known = Map.of("s/a", new ChangeDetector.Known(10, 5_000));
+
+        var same = ChangeDetector.detect(known, List.of(clip("a", 10, 5_999)));
+        var later = ChangeDetector.detect(known, List.of(clip("a", 10, 6_000)));
+
+        assertEquals(1, same.unchanged().size());
+        assertEquals(1, later.changed().size());
     }
 }

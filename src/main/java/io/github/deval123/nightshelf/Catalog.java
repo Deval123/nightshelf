@@ -22,7 +22,12 @@ public record Catalog(List<Entry> clips) {
             String id,
             String file,
             Map<String, String> status,
-            Integer uses) {
+            List<Use> uses) {
+    }
+
+    /** One use of a clip; its fields are not needed, only the count. */
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    public record Use() {
     }
 
     @JsonIgnoreProperties(ignoreUnknown = true)
