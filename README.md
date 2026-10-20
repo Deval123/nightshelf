@@ -56,8 +56,46 @@ The index refuses to open on a network filesystem (SMB, NFS, AFP and similar):
 SQLite locking and WAL are not reliable there. It exits with status 2; point
 `DB_PATH` at a local disk.
 
+## Search
+
+Described clips can be searched by content. First compute their embeddings
+(needs `OLLAMA_URL` and the `EMBED_MODEL`); only described clips that have no
+vector for the current `EMBED_MODEL` are processed, so changing the model
+recomputes everything:
+
+```
+java -jar target/nightshelf-0.1.0-SNAPSHOT.jar embed
+```
+
+Then search:
+
+```
+java -jar target/nightshelf-0.1.0-SNAPSHOT.jar search "rainy city at night" \
+    --channel mychannel --status unused --limit 10
+```
+
+Results combine SQLite full-text search (FTS5) and vector similarity with
+reciprocal rank fusion. If Ollama is not configured or not reachable, the
+search falls back to full-text only and prints one `note:` line. Each result
+shows the key, score, duration, a one-line description, the status per channel
+and the channels it was used on (from `catalog.json`, which is only read), and
+the file path.
+
+| Option                 | Meaning                                                              |
+|------------------------|----------------------------------------------------------------------|
+| `--channel NAME`       | Look at the status and uses of this channel                           |
+| `--status S`           | With `--channel`: `approved`, `rejected`, `unused` (never used on it) or `any`. Default: hide clips rejected for the channel |
+| `--orientation O`      | Only clips with this orientation in the catalog                       |
+| `--min-duration SEC`   | Only clips at least this long in the catalog                          |
+| `--limit N`            | Number of results, 1 to 50 (default 10)                               |
+
+The search text is never passed to SQLite as query syntax: it is split into
+words and each word is quoted.
+
 ## Security note
 
-Traffic to Ollama is plain `http` (unencrypted), and so are the frames sent in
-each request. Run Ollama on `localhost`, on a trusted LAN, or reach it through
+Traffic to Ollama is plain `http` (unencrypted). That includes the frames sent
+to describe a clip, the clip descriptions sent by `embed`, and every search
+query sent by `search`: all of it is readable by anyone on the path to the
+Ollama host. Run Ollama on `localhost`, on a trusted LAN, or reach it through
 an SSH tunnel (for example `ssh -L 11434:localhost:11434 host`).

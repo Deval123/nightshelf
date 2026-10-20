@@ -15,4 +15,9 @@ public record Description(
     static final int MAX_SUBJECT = 80;
     static final int MAX_FIELD = 120;
     static final List<String> TIMES_OF_DAY = List.of("day", "night", "dusk", "dawn", "unknown");
+
+    /** The text that is indexed and embedded: all fields, plain, in one string. */
+    public String searchText() {
+        return String.join(" ", description, String.join(" ", subjects), setting, mood, timeOfDay).strip();
+    }
 }

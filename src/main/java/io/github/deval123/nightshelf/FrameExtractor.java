@@ -73,24 +73,8 @@ public final class FrameExtractor {
         }
     }
 
-    /** Rejects option-like names and anything whose real path is outside the library. */
     Path validate(Path clip) throws FrameException {
-        Path name = clip.getFileName();
-        if (clip.toString().startsWith("-") || name == null || name.toString().startsWith("-")) {
-            throw new FrameException(clip, "path must not start with '-'");
-        }
-        try {
-            Path real = clip.toRealPath();
-            if (!real.startsWith(clipbankDir.toRealPath())) {
-                throw new FrameException(clip, "path is outside the clip library");
-            }
-            return real;
-        } catch (IOException e) {
-            if (e instanceof FrameException f) {
-                throw f;
-            }
-            throw new FrameException(clip, "cannot read clip", e);
-        }
+        return ClipPaths.requireInside(clipbankDir, clip);
     }
 
     private double probeDuration(Path safe) throws FrameException {

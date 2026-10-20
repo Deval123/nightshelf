@@ -24,12 +24,14 @@ public record Catalog(List<Entry> clips) {
             String id,
             String file,
             Map<String, String> status,
-            List<Use> uses) {
+            List<Use> uses,
+            Double duration,
+            String orientation) {
     }
 
-    /** One use of a clip; its fields are not needed, only the count. */
+    /** One use of a clip on a channel; other fields are ignored. */
     @JsonIgnoreProperties(ignoreUnknown = true)
-    public record Use() {
+    public record Use(String channel) {
     }
 
     @JsonIgnoreProperties(ignoreUnknown = true)

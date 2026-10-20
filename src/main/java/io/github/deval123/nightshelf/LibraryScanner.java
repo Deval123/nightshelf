@@ -25,9 +25,17 @@ public final class LibraryScanner {
     private LibraryScanner() {
     }
 
-    public static List<Clip> scan(Path clipbankDir) throws IOException {
+    /** Reads the catalog (read-only); an absent file gives an empty catalog. */
+    public static Catalog loadCatalog(Path clipbankDir) throws IOException {
         Path catalogFile = clipbankDir.resolve(CATALOG_FILE);
-        Catalog catalog = Files.exists(catalogFile) ? Catalog.read(catalogFile) : Catalog.empty();
+        return Files.exists(catalogFile) ? Catalog.read(catalogFile) : Catalog.empty();
+    }
+
+    public static List<Clip> scan(Path clipbankDir) throws IOException {
+        return scan(clipbankDir, loadCatalog(clipbankDir));
+    }
+
+    public static List<Clip> scan(Path clipbankDir, Catalog catalog) throws IOException {
 
         List<Clip> clips = new ArrayList<>();
         Path clipsDir = clipbankDir.resolve(CLIPS_DIR);

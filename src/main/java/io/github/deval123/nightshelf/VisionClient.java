@@ -57,7 +57,8 @@ public final class VisionClient {
         this.model = model;
         this.requestTimeout = requestTimeout;
         this.backoff = backoff;
-        this.http = HttpClient.newBuilder().connectTimeout(connectTimeout).build();
+        this.http = HttpClient.newBuilder().connectTimeout(connectTimeout)
+                .followRedirects(HttpClient.Redirect.NEVER).build();
     }
 
     /** Describes one clip, retrying transient failures up to {@link #MAX_RETRIES} times. */
