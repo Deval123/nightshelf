@@ -179,8 +179,11 @@ class SearchServiceTest {
                     sorted(search(index, null, "needle", new SearchFilter("chan1", SearchFilter.Status.APPROVED, null, null))));
             assertEquals(List.of("src/bad"),
                     sorted(search(index, null, "needle", new SearchFilter("chan1", SearchFilter.Status.REJECTED, null, null))));
-            assertEquals(List.of("src/bad", "src/new", "src/ok"),
+            // unused: never used on chan1 and not rejected for it (src/bad is rejected for chan1)
+            assertEquals(List.of("src/new", "src/ok"),
                     sorted(search(index, null, "needle", new SearchFilter("chan1", SearchFilter.Status.UNUSED, null, null))));
+            assertEquals(List.of("src/bad", "src/new", "src/ok", "src/used"),
+                    sorted(search(index, null, "needle", new SearchFilter("chan2", SearchFilter.Status.UNUSED, null, null))));
             assertEquals(4,
                     search(index, null, "needle", new SearchFilter("chan1", SearchFilter.Status.ANY, null, null)).hits().size());
             assertEquals(List.of("src/ok", "src/used"),
@@ -195,6 +198,16 @@ class SearchServiceTest {
             SearchService.Hit used = search(index, null, "needle", SearchFilter.none()).hits().stream()
                     .filter(h -> h.key().equals("src/used")).findFirst().orElseThrow();
             assertEquals(List.of("chan1"), used.usedOn());
+        }
+    }
+
+    @Test
+    void descriptionsAreShownWithoutTheirFramingButStayAsStored() throws Exception {
+        try (ClipIndex index = index("x", "The video shows a lamp at night")) {
+            SearchService.Result r = search(index, null, "lamp", SearchFilter.none());
+
+            assertEquals("A lamp at night", r.hits().get(0).description());
+            assertEquals("The video shows a lamp at night", index.get("src/x").orElseThrow().description().description());
         }
     }
 

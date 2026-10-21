@@ -136,8 +136,33 @@ class ClipIndexSearchTest {
     }
 
     @Test
+    void stopWordsAndFramingWordsAreDroppedFromTheQuery() {
+        assertEquals("\"dog\" OR \"beach\"", FtsQuery.match("a video of the dog on the beach"));
+        assertEquals("\"rainy\" OR \"street\"", FtsQuery.match("This clip shows a rainy street near it"));
+        assertEquals("\"lamp\"", FtsQuery.match("The Scene Captures; Depicts, Features OF lamp"));
+    }
+
+    @Test
+    void aQueryMadeOnlyOfIgnoredWordsFallsBackToTheOriginalWords() {
+        assertEquals("\"in\" OR \"the\" OR \"video\"", FtsQuery.match("in the video"));
+        assertEquals("\"and\"", FtsQuery.match("AND"));
+        assertEquals(null, FtsQuery.match("... ***"));
+    }
+
+    @Test
+    void ignoredWordsStayPlainTextWhenHostile() {
+        assertEquals("\"lamp\" OR \"not\" OR \"car\"", FtsQuery.match("the lamp NOT car"));
+        assertEquals("\"lamp\"", FtsQuery.match("\"the\" OR (lamp) -video"));
+        try (ClipIndex index = open()) {
+            described(index, "a", desc("a lamp in the video", "lamp"));
+            assertEquals(List.of("src/a"), index.ftsSearch("the \" OR * video lamp", 10));
+            assertEquals(List.of("src/a"), index.ftsSearch("in the", 10), "falls back to the original words");
+        }
+    }
+
+    @Test
     void queryBuilderQuotesEveryWord() {
-        assertEquals("\"rainy\" OR \"city\" OR \"and\" OR \"night\"", FtsQuery.match("Rainy city, AND night!"));
+        assertEquals("\"rainy\" OR \"city\" OR \"night\"", FtsQuery.match("Rainy city, AND night!"));
         assertEquals(null, FtsQuery.match("*** \"\""));
         assertEquals(FtsQuery.MAX_TOKENS, FtsQuery.match("w ".repeat(100)).split(" OR ").length);
     }
