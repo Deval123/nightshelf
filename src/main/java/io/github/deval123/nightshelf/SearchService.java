@@ -170,6 +170,6 @@ public final class SearchService {
         List<String> used = entry == null || entry.uses() == null ? List.of()
                 : entry.uses().stream().map(Catalog.Use::channel).filter(c -> c != null).distinct().sorted().toList();
         return new Hit(key, score, similarity, entry == null ? null : entry.duration(),
-                Sanitize.cleanAtWord(stored.description().description(), DESCRIPTION_WIDTH), path, status, used);
+                Sanitize.cleanAtWord(DisplayText.withoutFraming(stored.description().description()), DESCRIPTION_WIDTH), path, status, used);
     }
 }

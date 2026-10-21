@@ -5,9 +5,11 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -22,6 +24,10 @@ class MainCommandTest {
     }
 
     private Result run(String... args) throws IOException, InterruptedException {
+        return run(Map.of(), args);
+    }
+
+    private Result run(Map<String, String> env, String... args) throws IOException, InterruptedException {
         List<String> cmd = new ArrayList<>(List.of(
                 Path.of(System.getProperty("java.home"), "bin", "java").toString(),
                 "-cp", System.getProperty("java.class.path"), Main.class.getName()));
@@ -30,6 +36,7 @@ class MainCommandTest {
         pb.environment().keySet().removeIf(k -> k.equals("CLIPBANK_DIR") || k.equals("OLLAMA_URL")
                 || k.equals("DB_PATH") || k.equals("FRAME_COUNT"));
         pb.environment().put("DB_PATH", home.resolve("index.db").toString());
+        pb.environment().putAll(env);
         Process p = pb.start();
         p.getOutputStream().close();
         byte[] out = p.getInputStream().readAllBytes();
@@ -43,7 +50,7 @@ class MainCommandTest {
         Result r = run("frobnicate");
 
         assertEquals(2, r.exit());
-        assertEquals("unknown command: frobnicate; try: scan, describe, sync, run, stats, embed, search",
+        assertEquals("unknown command: frobnicate; try: scan, describe, sync, run, stats, embed, search, export",
                 r.err().strip());
         assertEquals("", r.out());
     }
@@ -71,5 +78,27 @@ class MainCommandTest {
 
         assertEquals(0, r.exit());
         assertTrue(r.out().contains("CLIPBANK_DIR=<unset>"), r.out());
+    }
+
+    @Test
+    void exportRefusesAnOutputInsideTheLibraryWithExitTwo() throws Exception {
+        Path lib = Files.createDirectories(home.resolve("lib"));
+        Files.writeString(lib.resolve("catalog.json"), "{\"version\": 1, \"clips\": {}}");
+
+        Result r = run(Map.of("CLIPBANK_DIR", lib.toString()), "export", "lamp", "--format", "csv", "--out",
+                lib.resolve("list.csv").toString());
+
+        assertEquals(2, r.exit());
+        assertTrue(r.err().contains("inside the clip library"), r.err());
+        assertEquals(1, r.err().strip().lines().count());
+        assertTrue(!Files.exists(lib.resolve("list.csv")));
+    }
+
+    @Test
+    void exportWithoutRequiredOptionsGetsAUsageLine() throws Exception {
+        Result r = run("export", "lamp");
+
+        assertEquals(2, r.exit());
+        assertTrue(r.err().contains("usage: export"), r.err());
     }
 }

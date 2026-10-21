@@ -15,7 +15,7 @@ public final class Main {
     private Main() {
     }
 
-    static final List<String> COMMANDS = List.of("scan", "describe", "sync", "run", "stats", "embed", "search");
+    static final List<String> COMMANDS = List.of("scan", "describe", "sync", "run", "stats", "embed", "search", "export");
 
     public static void main(String[] args) throws IOException {
         if (args.length > 0 && !COMMANDS.contains(args[0])) {
@@ -42,6 +42,8 @@ public final class Main {
                 embed(config);
             } else if (args.length > 0 && args[0].equals("search")) {
                 search(config, SearchArgs.parse(List.of(args).subList(1, args.length)));
+            } else if (args.length > 0 && args[0].equals("export")) {
+                export(config, ExportArgs.parse(List.of(args).subList(1, args.length)));
             } else if (args.length == 2 && args[0].equals("describe")) {
                 describe(config, Path.of(args[1]));
             } else if (args.length == 0) {
@@ -165,18 +167,35 @@ public final class Main {
         }
     }
 
-    private static void search(Config config, SearchArgs args) throws IOException {
-        requireClipbank(config);
+    private static SearchService.Result find(Config config, ClipIndex index, SearchArgs args) throws IOException {
         Catalog catalog = LibraryScanner.loadCatalog(config.clipbankDir());
         Map<String, Clip> clips = LibraryScanner.scan(config.clipbankDir(), catalog).stream()
                 .collect(Collectors.toMap(Clip::key, Function.identity(), (a, b) -> a));
+        Embedder embedder = config.ollamaUrl() == null ? null
+                : new EmbedClient(config.requireOllamaUrl(), config.embedModel(),
+                        index.embeddingDimension(config.embedModel()));
+        var result = SearchService.search(index, embedder, config.embedModel(), args.query(), args.filter(),
+                args.limit(), config.clipbankDir(), clips, catalog, args.minSimilarity());
+        result.notes().forEach(n -> System.err.println("note: " + n));
+        return result;
+    }
+
+    /** Writes the shortlist of a search to a file outside the library. */
+    private static void export(Config config, ExportArgs args) throws IOException {
+        requireClipbank(config);
+        Exporter.checkTarget(args.out(), config.clipbankDir(), args.force());
         try (ClipIndex index = ClipIndex.open(config.dbPath())) {
-            Embedder embedder = config.ollamaUrl() == null ? null
-                    : new EmbedClient(config.requireOllamaUrl(), config.embedModel(),
-                            index.embeddingDimension(config.embedModel()));
-            var result = SearchService.search(index, embedder, config.embedModel(), args.query(), args.filter(),
-                    args.limit(), config.clipbankDir(), clips, catalog, args.minSimilarity());
-            result.notes().forEach(n -> System.err.println("note: " + n));
+            var result = find(config, index, args.search());
+            Exporter.write(args.out(), config.clipbankDir(), args.force(), args.format(), args.search().query(),
+                    result.hits());
+            System.out.println("exported " + result.hits().size() + " result(s) to " + printable(args.out().toString()));
+        }
+    }
+
+    private static void search(Config config, SearchArgs args) throws IOException {
+        requireClipbank(config);
+        try (ClipIndex index = ClipIndex.open(config.dbPath())) {
+            var result = find(config, index, args);
             int rank = 1;
             for (var hit : result.hits()) {
                 System.out.printf(Locale.ROOT, "%d. %s  score %.4f  sim %s  %s%n", rank++, printable(hit.key()),

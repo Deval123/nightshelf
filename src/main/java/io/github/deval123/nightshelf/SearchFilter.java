@@ -5,7 +5,8 @@ import java.util.Locale;
 /**
  * Filters results with the read-only catalog. With a channel, the status
  * decides: DEFAULT hides clips rejected for that channel, APPROVED and REJECTED
- * keep only those, UNUSED keeps clips never used on that channel, ANY keeps all.
+ * keep only those, UNUSED keeps clips never used on that channel and not rejected for it,
+ * ANY keeps all.
  */
 public record SearchFilter(String channel, Status status, String orientation, Double minDuration) {
 
@@ -59,7 +60,7 @@ public record SearchFilter(String channel, Status status, String orientation, Do
             case DEFAULT -> !"rejected".equals(state);
             case APPROVED -> "approved".equals(state);
             case REJECTED -> "rejected".equals(state);
-            case UNUSED -> !used;
+            case UNUSED -> !used && !"rejected".equals(state);
             case ANY -> true;
         };
     }
